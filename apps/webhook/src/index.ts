@@ -1,17 +1,15 @@
 import crypto from "crypto";
 import { execSync } from "child_process";
 
-// ─── Environment ──────────────────────────────────────────────────────────────
 const WEBHOOK_SECRET: string = process.env.WEBHOOK_SECRET || "";
 const REPO: string = process.env.REPO || ".";
 const DO_TOKEN: string = process.env.DO_TOKEN || "";
 const DO_APP_ID: string = process.env.DO_APP_ID || "";
-
-/** Polling interval in milliseconds (default: every 5 minutes) */
+const FAILURE_CHECK_URL: string =
+    process.env.FAILURE_CHECK_URL || "http://localhost:8081";
 const POLL_INTERVAL_MS: number =
     parseInt(process.env.POLL_INTERVAL_MS || "300000", 10);
 
-// ─── Types ────────────────────────────────────────────────────────────────────
 interface DODeployment {
     id: string;
     phase: string;
@@ -27,9 +25,6 @@ interface DODeploymentsResponse {
     deployments: DODeployment[];
 }
 
-// ─── DigitalOcean API polling ─────────────────────────────────────────────────
-
-/** Fetch the latest deployments for the configured DO App and log failures. */
 async function checkDeployments(): Promise<void> {
     if (!DO_TOKEN || !DO_APP_ID) {
         console.warn(
@@ -63,8 +58,6 @@ async function checkDeployments(): Promise<void> {
             return;
         }
 
-        // A deployment is considered failed when phase is ERROR or FAILED,
-        // or when the progress reports error steps.
         const failed = deployments.filter(
             (d) =>
                 d.phase === "ERROR" ||
@@ -84,6 +77,7 @@ async function checkDeployments(): Promise<void> {
                 console.error(
                     `           ID: ${d.id} | Phase: ${d.phase} | Cause: ${d.cause} | Updated: ${d.updated_at}`
                 );
+                triggerFailureCheck(d.id);
             }
         }
     } catch (err) {
@@ -91,18 +85,37 @@ async function checkDeployments(): Promise<void> {
     }
 }
 
-/** Start the cron-style polling loop. */
 function startPolling(): void {
     console.log(
         `[DO Poller] Starting – polling every ${POLL_INTERVAL_MS / 1000}s for app "${DO_APP_ID}"`
     );
-
-    // Run immediately on startup, then repeat on the interval.
     checkDeployments();
     setInterval(checkDeployments, POLL_INTERVAL_MS);
 }
 
-// ─── GitHub Webhook handler ───────────────────────────────────────────────────
+function triggerFailureCheck(deploymentId: string): void {
+    const url = `${FAILURE_CHECK_URL}/analyse`;
+    console.log(
+        `[DO Poller] → Triggering failure_check for deployment ${deploymentId}`
+    );
+    fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deployment_id: deploymentId }),
+    })
+        .then((res) => {
+            if (!res.ok) {
+                console.error(
+                    `[DO Poller] failure_check responded ${res.status}`
+                );
+            } else {
+                console.log(`[DO Poller] ✓ failure_check analysis queued (202)`);
+            }
+        })
+        .catch((err) =>
+            console.error("[DO Poller] Could not reach failure_check:", err)
+        );
+}
 
 function verifySignature(body: string, signature: string | null): boolean {
     if (!signature) return false;
@@ -139,8 +152,6 @@ async function handleWebhook(req: Request): Promise<Response> {
     return new Response("OK");
 }
 
-// ─── HTTP Server ──────────────────────────────────────────────────────────────
-
 const server = Bun.serve({
     port: parseInt(process.env.PORT || "8080", 10),
     routes: {
@@ -153,6 +164,4 @@ const server = Bun.serve({
 });
 
 console.log(`[Server] Listening at ${server.url}`);
-
-// ─── Start polling ────────────────────────────────────────────────────────────
 startPolling();

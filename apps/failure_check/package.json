@@ -1,8 +1,12 @@
 {
   "name": "failure_check",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --watch run src/index.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
